@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
+from catboost import Pool
 
 
 def prepare_model_data(df: pd.DataFrame, target_col: str = "default"):
@@ -48,4 +49,26 @@ def create_preprocessing_pipeline(X_train: pd.DataFrame):
     )
     
     return preprocessor, numeric_cols, categorical_cols
+
+
+def prepare_catboost_data(df, target_col="default"):
+    """Prepare data for CatBoost using Pool (no OHE needed)
+    
+    Args:
+        df: DataFrame with features and target
+        target_col: Name of target column
+        
+    Returns:
+        X: Feature DataFrame
+        y: Target Series
+        cat_feature_indices: List of categorical feature indices
+    """
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
+    
+    # Identify categorical features
+    cat_features = X.select_dtypes(include=["object", "category"]).columns.tolist()
+    cat_feature_indices = [X.columns.get_loc(c) for c in cat_features]
+    
+    return X, y, cat_feature_indices
 

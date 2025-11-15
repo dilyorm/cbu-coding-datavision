@@ -3,19 +3,12 @@ import numpy as np
 import json
 import xml.etree.ElementTree as ET
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     roc_auc_score, precision_recall_curve, average_precision_score,
-    classification_report, confusion_matrix, roc_curve
+    classification_report, confusion_matrix
 )
-import lightgbm as lgb
-import xgboost as xgb
 import catboost as cb
-from sklearn.model_selection import RandomizedSearchCV
-import optuna
+from catboost import Pool
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
@@ -449,235 +442,137 @@ def prepare_model_data(df):
     return X, y, feature_cols
 
 
-def create_preprocessing_pipeline(X_train):
-    """Create preprocessing pipeline"""
-    numeric_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
-    categorical_cols = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
+def prepare_catboost_data(df, target_col="default"):
+    """Prepare data for CatBoost using Pool (no OHE needed)
     
-    # Convert categorical columns to string for encoding
-    for col in categorical_cols:
-        X_train[col] = X_train[col].astype(str)
-    
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', 'passthrough', numeric_cols),
-            ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_cols)
-        ],
-        remainder='drop'
-    )
-    
-    return preprocessor, numeric_cols, categorical_cols
-
-
-def tune_lightgbm(X_train, y_train, X_valid, y_valid, n_trials=20):
-    """Hyperparameter tuning for LightGBM using Optuna"""
-    def objective(trial):
-        params = {
-            'n_estimators': 1000,
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'num_leaves': trial.suggest_int('num_leaves', 31, 127),
-            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-            'reg_alpha': trial.suggest_float('reg_alpha', 0, 1.0),
-            'reg_lambda': trial.suggest_float('reg_lambda', 0, 1.0),
-            'min_child_samples': trial.suggest_int('min_child_samples', 20, 100),
-            'objective': 'binary',
-            'class_weight': 'balanced',
-            'n_jobs': -1,
-            'random_state': 42,
-            'verbose': -1
-        }
+    Args:
+        df: DataFrame with features and target
+        target_col: Name of target column
         
-        model = lgb.LGBMClassifier(**params)
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_valid, y_valid)],
-            eval_metric='auc',
-            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
-        )
-        pred = model.predict_proba(X_valid)[:, 1]
-        return roc_auc_score(y_valid, pred)
+    Returns:
+        X: Feature DataFrame
+        y: Target Series
+        cat_feature_indices: List of categorical feature indices
+    """
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
     
-    study = optuna.create_study(direction='maximize', study_name='lightgbm_tuning')
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    # Identify categorical features
+    cat_features = X.select_dtypes(include=["object", "category"]).columns.tolist()
+    cat_feature_indices = [X.columns.get_loc(c) for c in cat_features]
     
-    best_params = study.best_params
-    best_params.update({
-        'n_estimators': 1000,
-        'objective': 'binary',
-        'class_weight': 'balanced',
-        'n_jobs': -1,
-        'random_state': 42,
-        'verbose': -1
-    })
-    
-    return best_params, study.best_value
+    return X, y, cat_feature_indices
 
 
-def train_models(X_train, y_train, X_valid, y_valid, preprocessor, tune_hyperparams=False):
-    """Train multiple models with optional hyperparameter tuning"""
+def train_catboost_model_cv(X_train, y_train, categorical_cols, tune_hyperparams=False, 
+                            n_splits=5, random_state=42):
+    """Train CatBoost model using StratifiedKFold CV"""
     print("\n" + "="*60)
-    print("STEP 9: Training Models...")
+    print("STEP 9: Training CatBoost Model with Cross-Validation...")
     print("="*60)
     
-    models = {}
-    results = {}
+    # Identify categorical columns
+    cat_cols = [col for col in categorical_cols if col in X_train.columns]
     
-    # Preprocess data
-    X_train_processed = preprocessor.fit_transform(X_train)
-    X_valid_processed = preprocessor.transform(X_valid)
+    # Ensure categorical columns are strings
+    X_train_cat = X_train.copy()
+    for c in cat_cols:
+        X_train_cat[c] = X_train_cat[c].astype(str)
     
-    # Calculate class weight
+    cat_feature_indices = [X_train_cat.columns.get_loc(c) for c in cat_cols if c in X_train_cat.columns]
     pos_weight = len(y_train[y_train == 0]) / len(y_train[y_train == 1])
     
-    # 1. Logistic Regression Baseline
-    print("\n1. Training Logistic Regression...")
-    lr = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=-1, random_state=42)
-    lr.fit(X_train_processed, y_train)
-    lr_pred = lr.predict_proba(X_valid_processed)[:, 1]
-    lr_auc = roc_auc_score(y_valid, lr_pred)
-    models['LogisticRegression'] = lr
-    results['LogisticRegression'] = {'auc': lr_auc, 'predictions': lr_pred}
-    print(f"   AUC: {lr_auc:.4f}")
+    # Setup CV
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    cv_scores = []
+    fold_models = []
     
-    # 2. LightGBM (with optional tuning)
-    print("\n2. Training LightGBM...")
-    if tune_hyperparams:
-        print("   Tuning hyperparameters (this may take a while)...")
-        best_params, best_score = tune_lightgbm(X_train_processed, y_train, X_valid_processed, y_valid, n_trials=20)
-        print(f"   Best validation AUC during tuning: {best_score:.4f}")
-        lgbm = lgb.LGBMClassifier(**best_params)
-    else:
-        lgbm = lgb.LGBMClassifier(
-            n_estimators=1000,
-            learning_rate=0.03,
-            max_depth=-1,
-            num_leaves=63,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='binary',
-            class_weight='balanced',
-            n_jobs=-1,
-            random_state=42,
-            verbose=-1
+    print(f"   Using {n_splits}-fold StratifiedKFold CV")
+    
+    # Model parameters
+    model_params = {
+        'iterations': 1000,
+        'learning_rate': 0.03,
+        'depth': 6,
+        'l2_leaf_reg': 3,
+        'loss_function': 'Logloss',
+        'eval_metric': 'AUC',
+        'class_weights': [1, pos_weight],
+        'random_seed': random_state,
+        'verbose': False
+    }
+    
+    # Train models on each fold
+    for fold_idx, (train_idx, valid_idx) in enumerate(skf.split(X_train_cat, y_train), 1):
+        X_fold_train = X_train_cat.iloc[train_idx]
+        X_fold_valid = X_train_cat.iloc[valid_idx]
+        y_fold_train = y_train.iloc[train_idx]
+        y_fold_valid = y_train.iloc[valid_idx]
+        
+        # Create Pool objects
+        train_pool = Pool(X_fold_train, y_fold_train, cat_features=cat_feature_indices)
+        valid_pool = Pool(X_fold_valid, y_fold_valid, cat_features=cat_feature_indices)
+        
+        # Train model
+        fold_model = cb.CatBoostClassifier(**model_params)
+        fold_model.fit(
+            train_pool,
+            eval_set=valid_pool,
+            early_stopping_rounds=50
         )
+        
+        # Evaluate
+        fold_pred = fold_model.predict_proba(valid_pool)[:, 1]
+        fold_auc = roc_auc_score(y_fold_valid, fold_pred)
+        cv_scores.append(fold_auc)
+        fold_models.append(fold_model)
+        
+        print(f"   Fold {fold_idx}/{n_splits}: AUC = {fold_auc:.4f}")
     
-    lgbm.fit(
-        X_train_processed, y_train,
-        eval_set=[(X_valid_processed, y_valid)],
-        eval_metric='auc',
-        callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
-    )
-    lgbm_pred = lgbm.predict_proba(X_valid_processed)[:, 1]
-    lgbm_auc = roc_auc_score(y_valid, lgbm_pred)
-    models['LightGBM'] = lgbm
-    results['LightGBM'] = {'auc': lgbm_auc, 'predictions': lgbm_pred}
-    print(f"   Final AUC: {lgbm_auc:.4f}")
+    # Average CV score
+    mean_cv_auc = np.mean(cv_scores)
+    std_cv_auc = np.std(cv_scores)
+    print(f"\n   Mean CV AUC: {mean_cv_auc:.4f} (+/- {std_cv_auc:.4f})")
     
-    # 3. XGBoost
-    print("\n3. Training XGBoost...")
-    # In XGBoost 3.x, early_stopping_rounds goes in constructor, not fit()
-    xgb_model = xgb.XGBClassifier(
-        n_estimators=1000,
-        learning_rate=0.03,
-        max_depth=6,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        scale_pos_weight=pos_weight,
-        eval_metric='auc',
-        early_stopping_rounds=50,
-        n_jobs=-1,
-        random_state=42
-    )
-    xgb_model.fit(
-        X_train_processed, y_train,
-        eval_set=[(X_valid_processed, y_valid)],
-        verbose=False
-    )
-    xgb_pred = xgb_model.predict_proba(X_valid_processed)[:, 1]
-    xgb_auc = roc_auc_score(y_valid, xgb_pred)
-    models['XGBoost'] = xgb_model
-    results['XGBoost'] = {'auc': xgb_auc, 'predictions': xgb_pred}
-    print(f"   AUC: {xgb_auc:.4f}")
-    
-    # 4. CatBoost
-    print("\n4. Training CatBoost...")
-    cat_model = cb.CatBoostClassifier(
-        iterations=1000,
-        learning_rate=0.03,
-        depth=6,
-        l2_leaf_reg=3,
-        loss_function='Logloss',
-        class_weights=[1, pos_weight],
-        random_seed=42,
-        verbose=False
-    )
-    cat_model.fit(
-        X_train_processed, y_train,
-        eval_set=(X_valid_processed, y_valid),
+    # Train final model on all training data
+    print("\n   Training final model on all training data...")
+    train_pool_all = Pool(X_train_cat, y_train, cat_features=cat_feature_indices)
+    final_model = cb.CatBoostClassifier(**model_params)
+    final_model.fit(
+        train_pool_all,
         early_stopping_rounds=50
     )
-    cat_pred = cat_model.predict_proba(X_valid_processed)[:, 1]
-    cat_auc = roc_auc_score(y_valid, cat_pred)
-    models['CatBoost'] = cat_model
-    results['CatBoost'] = {'auc': cat_auc, 'predictions': cat_pred}
-    print(f"   AUC: {cat_auc:.4f}")
+    
+    results = {
+        'CatBoost': {
+            'cv_auc_mean': mean_cv_auc,
+            'cv_auc_std': std_cv_auc,
+            'cv_scores': cv_scores
+        }
+    }
+    
+    models = {
+        'CatBoost': final_model,
+        'CatBoost_X_train': X_train_cat,
+        'CatBoost_fold_models': fold_models
+    }
     
     return models, results
 
 
-def create_ensemble(models, results, X_valid, y_valid, preprocessor):
-    """Create ensemble model"""
-    print("\n" + "="*60)
-    print("STEP 10: Creating Ensemble...")
-    print("="*60)
+def evaluate_catboost_model(model, X_test, y_test, categorical_cols, model_name="CatBoost"):
+    """Evaluate CatBoost model on test set"""
+    # Prepare test data
+    X_test_cat = X_test.copy()
+    cat_cols = [col for col in categorical_cols if col in X_test.columns]
+    for c in cat_cols:
+        X_test_cat[c] = X_test_cat[c].astype(str)
     
-    # Get predictions from all models
-    X_valid_processed = preprocessor.transform(X_valid)
+    cat_feature_indices = [X_test_cat.columns.get_loc(c) for c in cat_cols if c in X_test_cat.columns]
+    test_pool = Pool(X_test_cat, y_test, cat_features=cat_feature_indices)
     
-    predictions = {}
-    for name, model in models.items():
-        predictions[name] = model.predict_proba(X_valid_processed)[:, 1]
-    
-    # Try different ensemble weights
-    best_auc = 0
-    best_weights = None
-    
-    # Simple grid search for weights
-    weight_options = [
-        (0.25, 0.25, 0.25, 0.25),  # Equal weights
-        (0.4, 0.3, 0.2, 0.1),      # Favor LightGBM
-        (0.3, 0.3, 0.3, 0.1),      # Favor top 3
-        (0.5, 0.3, 0.15, 0.05),    # Strong LightGBM
-    ]
-    
-    model_names = ['LightGBM', 'XGBoost', 'CatBoost', 'LogisticRegression']
-    
-    for weights in weight_options:
-        ensemble_pred = (
-            weights[0] * predictions['LightGBM'] +
-            weights[1] * predictions['XGBoost'] +
-            weights[2] * predictions['CatBoost'] +
-            weights[3] * predictions['LogisticRegression']
-        )
-        ensemble_auc = roc_auc_score(y_valid, ensemble_pred)
-        if ensemble_auc > best_auc:
-            best_auc = ensemble_auc
-            best_weights = weights
-    
-    print(f"Best ensemble AUC: {best_auc:.4f}")
-    print(f"Best weights: {dict(zip(model_names, best_weights))}")
-    
-    return best_weights, best_auc
-
-
-def evaluate_model(model, X_test, y_test, preprocessor, model_name):
-    """Evaluate model on test set"""
-    X_test_processed = preprocessor.transform(X_test)
-    
-    y_pred_proba = model.predict_proba(X_test_processed)[:, 1]
-    y_pred = model.predict(X_test_processed)
+    y_pred_proba = model.predict_proba(test_pool)[:, 1]
+    y_pred = (y_pred_proba >= 0.5).astype(int)
     
     auc = roc_auc_score(y_test, y_pred_proba)
     pr_auc = average_precision_score(y_test, y_pred_proba)
@@ -714,53 +609,36 @@ def main():
     # Step 7: Prepare model data
     X, y, feature_cols = prepare_model_data(df_final)
     
-    # Step 8: Train/Validation/Test Split
+    # Step 8: Create holdout test set (15% of data)
     print("\n" + "="*60)
-    print("STEP 8: Train/Validation/Test Split...")
+    print("STEP 8: Creating Holdout Test Set...")
     print("="*60)
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=0.3, stratify=y, random_state=42
+    X_train_cv, X_test, y_train_cv, y_test = train_test_split(
+        X, y, test_size=0.15, stratify=y, random_state=42
     )
-    X_valid, X_test, y_valid, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=42
+    print(f"CV Training set: {X_train_cv.shape[0]}, Holdout Test set: {X_test.shape[0]}")
+    print(f"Test set will only be used for final evaluation")
+    
+    # Get categorical columns for CatBoost (no preprocessing needed)
+    categorical_cols = X_train_cv.select_dtypes(include=["object", "category"]).columns.tolist()
+    print(f"Categorical features: {len(categorical_cols)}")
+    
+    # Step 9: Train CatBoost model with CV
+    models, results = train_catboost_model_cv(
+        X_train_cv, y_train_cv, categorical_cols, 
+        tune_hyperparams=False, n_splits=5, random_state=42
     )
-    print(f"Train: {X_train.shape[0]}, Valid: {X_valid.shape[0]}, Test: {X_test.shape[0]}")
     
-    # Create preprocessing pipeline
-    preprocessor, numeric_cols, categorical_cols = create_preprocessing_pipeline(X_train)
-    
-    # Step 9: Train models (set tune_hyperparams=True for hyperparameter tuning)
-    models, results = train_models(X_train, y_train, X_valid, y_valid, preprocessor, tune_hyperparams=False)
-    
-    # Step 10: Create ensemble
-    best_weights, ensemble_auc = create_ensemble(models, results, X_valid, y_valid, preprocessor)
-    
-    # Step 11: Evaluate on test set
+    # Step 10: Evaluate on holdout test set (final evaluation only)
     print("\n" + "="*60)
-    print("STEP 11: Test Set Evaluation...")
+    print("STEP 10: Final Test Set Evaluation (Holdout)...")
     print("="*60)
     
-    test_results = {}
-    for name, model in models.items():
-        test_results[name] = evaluate_model(model, X_test, y_test, preprocessor, name)
+    test_results = evaluate_catboost_model(models['CatBoost'], X_test, y_test, categorical_cols, 'CatBoost')
     
-    # Evaluate ensemble
-    X_test_processed = preprocessor.transform(X_test)
-    ensemble_pred = (
-        best_weights[0] * models['LightGBM'].predict_proba(X_test_processed)[:, 1] +
-        best_weights[1] * models['XGBoost'].predict_proba(X_test_processed)[:, 1] +
-        best_weights[2] * models['CatBoost'].predict_proba(X_test_processed)[:, 1] +
-        best_weights[3] * models['LogisticRegression'].predict_proba(X_test_processed)[:, 1]
-    )
-    ensemble_test_auc = roc_auc_score(y_test, ensemble_pred)
-    ensemble_test_pr_auc = average_precision_score(y_test, ensemble_pred)
-    print(f"\nEnsemble Test Results:")
-    print(f"  ROC-AUC: {ensemble_test_auc:.4f}")
-    print(f"  PR-AUC: {ensemble_test_pr_auc:.4f}")
-    
-    # Step 12: Save models
+    # Step 11: Save models
     print("\n" + "="*60)
-    print("STEP 12: Saving Models...")
+    print("STEP 11: Saving Models...")
     print("="*60)
     
     # Create directories if they don't exist
@@ -768,50 +646,43 @@ def main():
     os.makedirs('models', exist_ok=True)
     os.makedirs('datas', exist_ok=True)
     
-    # Save best single model (highest validation AUC)
-    best_single_model_name = max(results, key=lambda x: results[x]['auc'])
-    best_single_model = models[best_single_model_name]
-    
-    # Save models in models/ folder
-    joblib.dump(best_single_model, 'models/default_prediction_model_advanced.pkl')
-    joblib.dump(preprocessor, 'models/preprocessor_advanced.pkl')
+    # Save CatBoost model
+    joblib.dump(models['CatBoost'], 'models/default_prediction_model_advanced.pkl')
     joblib.dump(feature_cols, 'models/feature_columns_advanced.pkl')
-    joblib.dump(best_weights, 'models/ensemble_weights.pkl')
-    joblib.dump(models, 'models/all_models_advanced.pkl')
+    joblib.dump(categorical_cols, 'models/categorical_columns_advanced.pkl')
+    joblib.dump({'CatBoost': models['CatBoost']}, 'models/all_models_advanced.pkl')
     print("Models saved in 'models/' folder")
     
-    # Save feature importance from best model
-    if hasattr(best_single_model, 'feature_importances_'):
-        # Get feature names after preprocessing (OneHotEncoder creates more features)
+    # Save feature importance from CatBoost model
+    if hasattr(models['CatBoost'], 'feature_importances_'):
         try:
-            # Get transformed feature names from preprocessor
-            feature_names = preprocessor.get_feature_names_out()
-            # Ensure lengths match
-            if len(feature_names) == len(best_single_model.feature_importances_):
+            # Get feature names (CatBoost uses original feature names)
+            feature_names = models['CatBoost_X_train'].columns.tolist()
+            if len(feature_names) == len(models['CatBoost'].feature_importances_):
                 feature_importance = pd.DataFrame({
                     'feature': feature_names,
-                    'importance': best_single_model.feature_importances_
+                    'importance': models['CatBoost'].feature_importances_
                 }).sort_values('importance', ascending=False)
             else:
                 # Fallback: use generic names if lengths don't match
                 feature_importance = pd.DataFrame({
-                    'feature': [f'feature_{i}' for i in range(len(best_single_model.feature_importances_))],
-                    'importance': best_single_model.feature_importances_
+                    'feature': [f'feature_{i}' for i in range(len(models['CatBoost'].feature_importances_))],
+                    'importance': models['CatBoost'].feature_importances_
                 }).sort_values('importance', ascending=False)
             feature_importance.to_csv('datas/feature_importance_advanced.csv', index=False)
             print("Feature importance saved in 'datas/' folder")
         except Exception as e:
-            print(f"Warning: Could not get feature names from preprocessor: {e}")
+            print(f"Warning: Could not get feature names: {e}")
             # Fallback: save with generic feature names
             feature_importance = pd.DataFrame({
-                'feature': [f'feature_{i}' for i in range(len(best_single_model.feature_importances_))],
-                'importance': best_single_model.feature_importances_
+                'feature': [f'feature_{i}' for i in range(len(models['CatBoost'].feature_importances_))],
+                'importance': models['CatBoost'].feature_importances_
             }).sort_values('importance', ascending=False)
             feature_importance.to_csv('datas/feature_importance_advanced.csv', index=False)
             print("Feature importance saved with generic names in 'datas/' folder")
     
-    print(f"Best single model: {best_single_model_name} (AUC: {results[best_single_model_name]['auc']:.4f})")
-    print(f"Ensemble AUC: {ensemble_test_auc:.4f}")
+    print(f"CatBoost CV AUC: {results['CatBoost']['cv_auc_mean']:.4f} (+/- {results['CatBoost']['cv_auc_std']:.4f})")
+    print(f"CatBoost Test AUC: {test_results['auc']:.4f}")
     print("\nAll models saved successfully!")
     
     # Save cleaned dataset in datas/ folder

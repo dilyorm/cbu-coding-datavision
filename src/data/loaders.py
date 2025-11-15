@@ -63,13 +63,77 @@ def load_demographics(filepath: str) -> pd.DataFrame:
         df['annual_income'] = df['annual_income'].apply(clean_currency)
     
     if 'employment_type' in df.columns:
-        df['employment_type'] = df['employment_type'].str.strip().str.lower()
+        df['employment_type'] = df['employment_type'].astype(str).str.strip().str.lower()
+        # Merge full-time variations
         df['employment_type'] = df['employment_type'].replace({
-            'full-time': 'full_time', 'fulltime': 'full_time', 'full time': 'full_time'
+            'full-time': 'full_time',
+            'fulltime': 'full_time',
+            'full time': 'full_time',
+            'ft': 'full_time',
+            'full': 'full_time'
+        })
+        # Merge part-time variations
+        df['employment_type'] = df['employment_type'].replace({
+            'part-time': 'part_time',
+            'parttime': 'part_time',
+            'part time': 'part_time',
+            'pt': 'part_time',
+            'part': 'part_time'
+        })
+        # Merge self-employed variations
+        df['employment_type'] = df['employment_type'].replace({
+            'self-employed': 'self_employed',
+            'selfemployed': 'self_employed',
+            'self employed': 'self_employed',
+            'self emp': 'self_employed',
+            'freelance': 'self_employed'
+        })
+        # Merge contractor variations (constructor, contract, etc.)
+        df['employment_type'] = df['employment_type'].replace({
+            'contractor': 'contractor',
+            'constructor': 'contractor',
+            'contract': 'contractor',
+            'contructor': 'contractor',  # typo variation
+            'contruct': 'contractor',  # typo variation
+            'independent contractor': 'contractor',
+            'ind contractor': 'contractor'
+        })
+        # Merge unemployed variations
+        df['employment_type'] = df['employment_type'].replace({
+            'unemployed': 'unemployed',
+            'unemp': 'unemployed',
+            'no job': 'unemployed',
+            'not employed': 'unemployed'
         })
     
     if 'education' in df.columns:
-        df['education'] = df['education'].str.strip()
+        df['education'] = df['education'].astype(str).str.strip().str.title()
+        # Normalize education variations
+        df['education'] = df['education'].replace({
+            'High School': 'High_School',
+            'Highschool': 'High_School',
+            'High School Diploma': 'High_School',
+            'Hs': 'High_School',
+            'Bachelor': 'Bachelor',
+            'Bachelors': 'Bachelor',
+            'Bachelor Degree': 'Bachelor',
+            'Bs': 'Bachelor',
+            'Ba': 'Bachelor',
+            'Master': 'Master',
+            'Masters': 'Master',
+            'Master Degree': 'Master',
+            'Ms': 'Master',
+            'Ma': 'Master',
+            'Doctorate': 'Doctorate',
+            'Phd': 'Doctorate',
+            'Ph.D': 'Doctorate',
+            'Ph.D.': 'Doctorate',
+            'Associate': 'Associate',
+            'Associates': 'Associate',
+            'Associate Degree': 'Associate',
+            'Some College': 'Some_College',
+            'College': 'Some_College'
+        })
     
     numeric_cols = ['age', 'employment_length', 'num_dependents']
     for col in numeric_cols:
@@ -95,9 +159,35 @@ def load_loan_details(filepath: str) -> pd.DataFrame:
         df['loan_amount'] = df['loan_amount'].apply(clean_currency)
     
     if 'loan_type' in df.columns:
-        df['loan_type'] = df['loan_type'].str.strip().str.lower()
+        df['loan_type'] = df['loan_type'].astype(str).str.strip().str.lower()
+        # Merge credit card variations: cc, credit card, creditcard -> credit_card
         df['loan_type'] = df['loan_type'].replace({
-            'personal loan': 'personal', 'personal': 'personal'
+            'cc': 'credit_card',
+            'credit card': 'credit_card',
+            'creditcard': 'credit_card',
+            'credit-card': 'credit_card'
+        })
+        # Merge personal loan variations
+        df['loan_type'] = df['loan_type'].replace({
+            'personal loan': 'personal',
+            'personal_loan': 'personal',
+            'personal-loan': 'personal'
+        })
+        # Merge auto loan variations
+        df['loan_type'] = df['loan_type'].replace({
+            'auto loan': 'auto',
+            'auto_loan': 'auto',
+            'auto-loan': 'auto',
+            'car loan': 'auto',
+            'car_loan': 'auto'
+        })
+        # Merge mortgage variations
+        df['loan_type'] = df['loan_type'].replace({
+            'mortgage': 'mortgage',
+            'home loan': 'mortgage',
+            'home_loan': 'mortgage',
+            'home-loan': 'mortgage',
+            'housing loan': 'mortgage'
         })
     
     numeric_cols = ['loan_term', 'interest_rate', 'loan_to_value_ratio']

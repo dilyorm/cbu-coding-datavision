@@ -70,27 +70,51 @@ def handle_missing_values(df: pd.DataFrame, imputation_method: str = 'knn') -> p
         cols_to_impute = [col for col in cols_to_impute if col in df_clean.columns]
         
         if cols_to_impute:
-            print(f"  Using {imputation_method.upper()} imputation for {len(cols_to_impute)} numeric columns...")
-            impute_data = df_clean[cols_to_impute].copy()
+            # Separate employment_length for KNN imputation (always use KNN for this column)
+            employment_length_col = 'employment_length' if 'employment_length' in cols_to_impute else None
+            other_cols = [col for col in cols_to_impute if col != 'employment_length']
             
-            try:
-                if imputation_method == 'knn':
-                    imputer = KNNImputer(n_neighbors=5, weights='uniform')
-                    imputed_values = imputer.fit_transform(impute_data)
-                    df_clean[cols_to_impute] = imputed_values
-                elif imputation_method == 'iterative':
-                    imputer = IterativeImputer(max_iter=10, random_state=42, n_nearest_features=10)
-                    imputed_values = imputer.fit_transform(impute_data)
-                    df_clean[cols_to_impute] = imputed_values
-                else:  # median
+            # Impute employment_length with KNN if it has missing values
+            if employment_length_col and df_clean[employment_length_col].isna().sum() > 0:
+                print(f"  Using KNN imputation for {employment_length_col}...")
+                # Use other numeric columns as features for KNN imputation of employment_length
+                feature_cols = [col for col in numeric_cols 
+                               if col in df_clean.columns and col != employment_length_col and col != 'default']
+                if len(feature_cols) > 0:
+                    try:
+                        # Prepare data for KNN imputation
+                        knn_data = df_clean[feature_cols + [employment_length_col]].copy()
+                        knn_imputer = KNNImputer(n_neighbors=5, weights='uniform')
+                        knn_imputed = knn_imputer.fit_transform(knn_data)
+                        df_clean[employment_length_col] = knn_imputed[:, -1]  # Last column is employment_length
+                    except Exception as e:
+                        print(f"  Warning: KNN imputation for {employment_length_col} failed, using median: {e}")
+                        median_val = df_clean[employment_length_col].median()
+                        df_clean[employment_length_col] = df_clean[employment_length_col].fillna(median_val)
+            
+            # Impute other columns with specified method
+            if other_cols:
+                print(f"  Using {imputation_method.upper()} imputation for {len(other_cols)} numeric columns...")
+                impute_data = df_clean[other_cols].copy()
+                
+                try:
+                    if imputation_method == 'knn':
+                        imputer = KNNImputer(n_neighbors=5, weights='uniform')
+                        imputed_values = imputer.fit_transform(impute_data)
+                        df_clean[other_cols] = imputed_values
+                    elif imputation_method == 'iterative':
+                        imputer = IterativeImputer(max_iter=10, random_state=42, n_nearest_features=10)
+                        imputed_values = imputer.fit_transform(impute_data)
+                        df_clean[other_cols] = imputed_values
+                    else:  # median
+                        imputer = SimpleImputer(strategy='median')
+                        imputed_values = imputer.fit_transform(impute_data)
+                        df_clean[other_cols] = imputed_values
+                except Exception as e:
+                    print(f"  Warning: {imputation_method} imputation failed, falling back to median: {e}")
                     imputer = SimpleImputer(strategy='median')
                     imputed_values = imputer.fit_transform(impute_data)
-                    df_clean[cols_to_impute] = imputed_values
-            except Exception as e:
-                print(f"  Warning: {imputation_method} imputation failed, falling back to median: {e}")
-                imputer = SimpleImputer(strategy='median')
-                imputed_values = imputer.fit_transform(impute_data)
-                df_clean[cols_to_impute] = imputed_values
+                    df_clean[other_cols] = imputed_values
     
     # Log dropped columns
     if dropped_cols:

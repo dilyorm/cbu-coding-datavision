@@ -137,6 +137,50 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     if 'num_customer_service_calls' in df_feat.columns:
         df_feat['frequent_service_calls'] = (df_feat['num_customer_service_calls'] > 3).astype(int)
     
+    # 10. Log transforms for skewed positive numeric features (for tree models)
+    log_transform_cols = ['loan_amount', 'annual_income', 'total_debt_amount', 
+                         'monthly_income', 'revolving_balance']
+    # Also check for credit_total_credit_limit_sum (aggregated feature)
+    if 'credit_total_credit_limit_sum' in df_feat.columns:
+        log_transform_cols.append('credit_total_credit_limit_sum')
+    
+    for col in log_transform_cols:
+        if col in df_feat.columns:
+            # Only apply log transform if values are positive
+            if (df_feat[col] > 0).any():
+                df_feat[f'log_{col}'] = np.log1p(df_feat[col].fillna(0))
+    
+    # 11. Bucketed categorical versions of important numeric fields (for CatBoost)
+    # These will be treated as categoricals by CatBoost
+    bucket_features = [
+        ('loan_amount', 10),
+        ('debt_to_income_ratio', 10),
+        ('age', 10),
+        ('credit_score', 10),
+        ('annual_income', 10),
+        ('total_debt_amount', 10),
+        ('interest_rate', 5),
+        ('employment_length', 5)
+    ]
+    
+    for col, q in bucket_features:
+        if col in df_feat.columns:
+            try:
+                # Use qcut to create quantile-based buckets
+                df_feat[f'{col}_bucket'] = pd.qcut(
+                    df_feat[col], 
+                    q=q, 
+                    duplicates='drop',
+                    labels=False
+                )
+                # Convert to string so CatBoost treats it as categorical
+                df_feat[f'{col}_bucket'] = df_feat[f'{col}_bucket'].astype(str)
+                # Fill any NaN values from qcut
+                df_feat[f'{col}_bucket'] = df_feat[f'{col}_bucket'].fillna('Unknown')
+            except (ValueError, TypeError):
+                # Skip if qcut fails (e.g., too many duplicates)
+                pass
+    
     print(f"Created {len(df_feat.columns)} features (from {len(df.columns)})")
     return df_feat
 
