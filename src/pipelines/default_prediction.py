@@ -12,6 +12,7 @@ from src.modeling.prep import prepare_model_data, prepare_catboost_data
 from src.modeling.training import train_final_catboost
 from src.modeling.tuning import tune_catboost_cv
 from src.modeling.evaluation import evaluate_model, find_best_threshold
+from src.modeling.feature_ablation import run_feature_ablation_analysis
 from src.data.io_utils import save_artifacts
 from sklearn.metrics import roc_auc_score, average_precision_score, classification_report, confusion_matrix
 from catboost import Pool
@@ -114,6 +115,18 @@ def run_default_pipeline():
         if col in X_train_full_cat.columns:
             X_train_full_cat[col] = X_train_full_cat[col].astype(str)
     
+    # Optional: Run feature ablation analysis
+    if getattr(training, 'run_feature_ablation', False):
+        ablation_results = run_feature_ablation_analysis(
+            X_train_full_cat, y_train_full, cat_feature_indices,
+            output_path=f'{paths.datas_dir}/feature_ablation_analysis.csv',
+            n_splits=n_splits,
+            random_state=training.random_state,
+            use_gpu=getattr(training, 'use_gpu', True)
+        )
+        print("\nFeature ablation analysis complete!")
+        print("Check 'datas/feature_ablation_analysis.csv' for detailed results")
+    
     # Step 9: Run Optuna tuning with CV
     print("\n" + "="*60)
     print("STEP 9: Hyperparameter Tuning with Optuna and CV...")
@@ -122,7 +135,8 @@ def run_default_pipeline():
     n_splits = getattr(training, 'cv_n_splits', 5)
     best_params, best_cv_auc = tune_catboost_cv(
         X_train_full_cat, y_train_full, cat_feature_indices,
-        n_splits=n_splits, n_trials=n_trials, random_state=training.random_state
+        n_splits=n_splits, n_trials=n_trials, random_state=training.random_state,
+        use_gpu=getattr(training, 'use_gpu', True)
     )
     print(f"Best CV AUC: {best_cv_auc:.4f}")
     print(f"Best parameters: {best_params}")

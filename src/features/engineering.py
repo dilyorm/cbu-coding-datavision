@@ -181,6 +181,83 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
                 # Skip if qcut fails (e.g., too many duplicates)
                 pass
     
+    # 12. Advanced credit-specific features (payment behavior, risk indicators)
+    # Payment behavior features
+    if 'monthly_payment' in df_feat.columns and 'monthly_income' in df_feat.columns:
+        df_feat['payment_to_income_ratio'] = df_feat['monthly_payment'] / (df_feat['monthly_income'] + 1e-3)
+        df_feat['payment_burden_high'] = (df_feat['payment_to_income_ratio'] > 0.4).astype(int)
+    
+    if 'monthly_payment' in df_feat.columns and 'monthly_free_cash_flow' in df_feat.columns:
+        df_feat['payment_to_min_ratio'] = df_feat['monthly_payment'] / (df_feat['monthly_free_cash_flow'] + 1e-3)
+    
+    # Credit utilization (if not already created)
+    if 'revolving_balance' in df_feat.columns and 'credit_total_credit_limit_sum' in df_feat.columns:
+        if 'overall_credit_utilization' not in df_feat.columns:
+            df_feat['overall_credit_utilization'] = df_feat['revolving_balance'] / (df_feat['credit_total_credit_limit_sum'] + 1e-3)
+        df_feat['credit_utilization_high'] = (df_feat['overall_credit_utilization'] > 0.8).astype(int)
+        df_feat['credit_utilization_low'] = (df_feat['overall_credit_utilization'] < 0.2).astype(int)
+    
+    # Delinquency flags (from credit history aggregation if available)
+    if 'credit_num_delinquencies_sum' in df_feat.columns:
+        df_feat['has_delinquencies'] = (df_feat['credit_num_delinquencies_sum'] > 0).astype(int)
+        df_feat['many_delinquencies'] = (df_feat['credit_num_delinquencies_sum'] > 3).astype(int)
+    
+    if 'credit_num_collections_sum' in df_feat.columns:
+        df_feat['has_collections'] = (df_feat['credit_num_collections_sum'] > 0).astype(int)
+    
+    # Application risk features
+    if 'loan_amount' in df_feat.columns and 'annual_income' in df_feat.columns:
+        if 'income_to_loan_ratio' not in df_feat.columns:
+            df_feat['income_to_loan_ratio'] = df_feat['annual_income'] / (df_feat['loan_amount'] + 1e-3)
+        df_feat['loan_amount_to_income_high'] = (df_feat['loan_amount'] > df_feat['annual_income'] * 0.5).astype(int)
+    
+    # Employment stability score
+    if 'employment_length' in df_feat.columns:
+        # Normalize employment length to 0-1 scale (assuming max is ~40 years)
+        df_feat['employment_stability_score'] = np.clip(df_feat['employment_length'] / 40.0, 0, 1)
+        df_feat['employment_very_stable'] = (df_feat['employment_length'] >= 10).astype(int)
+    
+    # Customer profile features
+    if 'age' in df_feat.columns:
+        df_feat['age_bucket'] = pd.cut(df_feat['age'], bins=[0, 25, 35, 45, 55, 65, 100], 
+                                      labels=['18-25', '26-35', '36-45', '46-55', '56-65', '65+'], 
+                                      right=False)
+        df_feat['age_bucket'] = df_feat['age_bucket'].astype(str)
+    
+    if 'annual_income' in df_feat.columns:
+        try:
+            df_feat['income_bucket'] = pd.qcut(df_feat['annual_income'], q=10, duplicates='drop', labels=False)
+            df_feat['income_bucket'] = df_feat['income_bucket'].astype(str)
+            df_feat['income_bucket'] = df_feat['income_bucket'].fillna('Unknown')
+        except (ValueError, TypeError):
+            pass
+    
+    if 'loan_term' in df_feat.columns:
+        try:
+            df_feat['loan_term_bucket'] = pd.qcut(df_feat['loan_term'], q=5, duplicates='drop', labels=False)
+            df_feat['loan_term_bucket'] = df_feat['loan_term_bucket'].astype(str)
+            df_feat['loan_term_bucket'] = df_feat['loan_term_bucket'].fillna('Unknown')
+        except (ValueError, TypeError):
+            pass
+    
+    # Credit history aggregation features (if credit history data is available)
+    if 'credit_num_accounts_sum' in df_feat.columns:
+        df_feat['has_multiple_accounts'] = (df_feat['credit_num_accounts_sum'] > 1).astype(int)
+        df_feat['many_accounts'] = (df_feat['credit_num_accounts_sum'] > 5).astype(int)
+    
+    # Ratio features for credit history
+    if 'credit_num_closed_accounts_sum' in df_feat.columns and 'credit_num_accounts_sum' in df_feat.columns:
+        df_feat['closed_to_total_accounts_ratio'] = (
+            df_feat['credit_num_closed_accounts_sum'] / (df_feat['credit_num_accounts_sum'] + 1e-3)
+        )
+    
+    # Payment volatility (if we have payment history data)
+    if 'credit_avg_payment_amount_sum' in df_feat.columns and 'monthly_payment' in df_feat.columns:
+        df_feat['payment_consistency'] = 1 - np.abs(
+            (df_feat['credit_avg_payment_amount_sum'] - df_feat['monthly_payment']) / (df_feat['monthly_payment'] + 1e-3)
+        )
+        df_feat['payment_consistency'] = np.clip(df_feat['payment_consistency'], 0, 1)
+    
     print(f"Created {len(df_feat.columns)} features (from {len(df.columns)})")
     return df_feat
 

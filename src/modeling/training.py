@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 from .tuning import tune_catboost, tune_catboost_cv
+from .gpu_utils import get_task_type
 
 
 def train_catboost_raw(X_train, y_train, X_valid, y_valid, categorical_cols, 
@@ -44,15 +45,20 @@ def train_catboost_raw(X_train, y_train, X_valid, y_valid, categorical_cols,
         print(f"   Best validation AUC during tuning: {best_score:.4f}")
         cat_model = cb.CatBoostClassifier(**best_params)
     else:
-        # Default parameters
+        # Default parameters with GPU support
+        from config.default_config import training
+        task_type = get_task_type(use_gpu=getattr(training, 'use_gpu', True))
+        # Use Logloss for GPU (AUC not supported), AUC for CPU
+        eval_metric = "Logloss" if task_type == "GPU" else "AUC"
         cat_model = cb.CatBoostClassifier(
             iterations=model_config.catboost_iterations,
             learning_rate=model_config.catboost_learning_rate,
             depth=model_config.catboost_depth,
             l2_leaf_reg=model_config.catboost_l2_leaf_reg,
             loss_function='Logloss',
-            eval_metric='AUC',
+            eval_metric=eval_metric,
             class_weights=[1, pos_weight],
+            task_type=task_type,
             random_seed=42,
             verbose=False
         )
@@ -104,22 +110,29 @@ def train_catboost_model_cv(X_train, y_train, categorical_cols,
         print("   Tuning hyperparameters with CV (this may take a while)...")
         from config.default_config import training
         n_trials = getattr(training, 'catboost_n_trials', 50)
+        use_gpu = getattr(training, 'use_gpu', True)
         best_params, best_cv_score = tune_catboost_cv(
             X_train_cat, y_train, cat_feature_indices, 
-            n_splits=n_splits, n_trials=n_trials, random_state=random_state
+            n_splits=n_splits, n_trials=n_trials, random_state=random_state,
+            use_gpu=use_gpu
         )
         print(f"   Best CV AUC during tuning: {best_cv_score:.4f}")
         model_params = best_params
     else:
-        # Default parameters
+        # Default parameters with GPU support
+        from config.default_config import training
+        task_type = get_task_type(use_gpu=getattr(training, 'use_gpu', True))
+        # Use Logloss for GPU (AUC not supported), AUC for CPU
+        eval_metric = "Logloss" if task_type == "GPU" else "AUC"
         model_params = {
             'iterations': model_config.catboost_iterations,
             'learning_rate': model_config.catboost_learning_rate,
             'depth': model_config.catboost_depth,
             'l2_leaf_reg': model_config.catboost_l2_leaf_reg,
             'loss_function': 'Logloss',
-            'eval_metric': 'AUC',
+            'eval_metric': eval_metric,
             'class_weights': [1, pos_weight],
+            'task_type': task_type,
             'random_seed': random_state,
             'verbose': False
         }

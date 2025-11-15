@@ -23,9 +23,11 @@ class TrainingConfig:
     valid_size: float = 0.5
     random_state: int = 42
     tune_hyperparams: bool = True  # Enable tuning by default for CatBoost
-    catboost_n_trials: int = 30  # More trials for better optimization
+    catboost_n_trials: int = 50  # More trials for better optimization (50-100 recommended)
     imputation_method: str = 'knn'  # 'knn', 'iterative', 'median'
     cv_n_splits: int = 5
+    run_feature_ablation: bool = False  # Run feature ablation analysis
+    use_gpu: bool = True  # Use GPU for CatBoost training (falls back to CPU if not available)
 
 
 @dataclass

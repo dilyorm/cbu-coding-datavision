@@ -6,6 +6,7 @@ from sklearn.model_selection import StratifiedKFold
 import numpy as np
 import catboost as cb
 from catboost import Pool
+from .gpu_utils import get_task_type
 
 
 def tune_lightgbm(X_train, y_train, X_valid, y_valid, n_trials=20):
@@ -54,7 +55,7 @@ def tune_lightgbm(X_train, y_train, X_valid, y_valid, n_trials=20):
     return best_params, study.best_value
 
 
-def tune_catboost_cv(X, y, cat_feature_indices, n_splits=5, n_trials=50, random_state=42):
+def tune_catboost_cv(X, y, cat_feature_indices, n_splits=5, n_trials=50, random_state=42, use_gpu=True):
     """Hyperparameter tuning for CatBoost using Optuna with StratifiedKFold CV
     
     Args:
@@ -72,18 +73,30 @@ def tune_catboost_cv(X, y, cat_feature_indices, n_splits=5, n_trials=50, random_
     # Setup CV
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     
+    # Get task type (GPU or CPU)
+    task_type = get_task_type(use_gpu=use_gpu)
+    if task_type == "GPU":
+        print(f"   Using GPU for training (faster)")
+        print(f"   Note: Using Logloss as eval_metric (AUC not supported on GPU, will compute separately)")
+        eval_metric = "Logloss"  # GPU doesn't support AUC as eval_metric
+    else:
+        print(f"   Using CPU for training (GPU not available)")
+        eval_metric = "AUC"  # CPU supports AUC
+    
     def objective(trial):
         params = {
             "loss_function": "Logloss",
-            "eval_metric": "AUC",
+            "eval_metric": eval_metric,  # Use Logloss for GPU, AUC for CPU
             "iterations": 5000,  # rely on early stopping
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.08),
+            "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2),
             "depth": trial.suggest_int("depth", 4, 10),
-            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 10.0),
-            "random_strength": trial.suggest_float("random_strength", 0.5, 3.0),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 20.0),
+            "random_strength": trial.suggest_float("random_strength", 0.5, 20.0),
             "border_count": trial.suggest_int("border_count", 64, 254),
             "auto_class_weights": trial.suggest_categorical("auto_class_weights", [None, "Balanced"]),
-            "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli"]),
+            "bootstrap_type": trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli", "MVS"]),
+            "one_hot_max_size": trial.suggest_int("one_hot_max_size", 2, 15),
+            "task_type": task_type,  # Use GPU if available
             "verbose": False,
             "random_seed": random_state,
         }
@@ -91,10 +104,13 @@ def tune_catboost_cv(X, y, cat_feature_indices, n_splits=5, n_trials=50, random_
         # Add bootstrap-specific parameters
         if params["bootstrap_type"] == "Bayesian":
             # bagging_temperature is only available for Bayesian bootstrap
-            params["bagging_temperature"] = trial.suggest_float("bagging_temperature", 0.0, 1.0)
+            params["bagging_temperature"] = trial.suggest_float("bagging_temperature", 0.0, 10.0)
         elif params["bootstrap_type"] == "Bernoulli":
             # subsample is required for Bernoulli bootstrap
             params["subsample"] = trial.suggest_float("subsample", 0.5, 1.0)
+        elif params["bootstrap_type"] == "MVS":
+            # MVS (Minimal Variance Sampling) parameters
+            params["mvs_reg"] = trial.suggest_float("mvs_reg", 20.0, 50.0)
         
         # Cross-validation
         fold_scores = []
@@ -131,14 +147,19 @@ def tune_catboost_cv(X, y, cat_feature_indices, n_splits=5, n_trials=50, random_
     best_params = study.best_params
     best_cv_auc = study.best_value
     
-    # Add fixed fields
-    best_params.update({
+    # Add fixed fields (preserve bootstrap-specific params if they exist)
+    fixed_params = {
         "loss_function": "Logloss",
-        "eval_metric": "AUC",
+        "eval_metric": eval_metric,  # Use appropriate metric for GPU/CPU
         "iterations": 5000,
+        "task_type": task_type,  # Preserve GPU/CPU setting
         "verbose": False,
         "random_seed": random_state,
-    })
+    }
+    # Only update with fixed params that aren't already in best_params
+    for key, value in fixed_params.items():
+        if key not in best_params:
+            best_params[key] = value
     
     return best_params, best_cv_auc
 
