@@ -1,0 +1,100 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Model files (large binary files - keep structure but ignore actual models)
+models/*.pkl
+!models/.gitkeep
+
+# Data files (large data files - keep structure but ignore actual data)
+datas/*.csv
+datas/*.parquet
+datas/*.xlsx
+datas/*.jsonl
+datas/*.xml
+!datas/.gitkeep
+
+# Raw input data files (large - add to Git LFS if needed)
+*.csv
+*.parquet
+*.xlsx
+*.jsonl
+*.xml
+!requirements.txt
+!README.md
+!SETUP_GITHUB.md
+
+# Training logs
+catboost_info/
+*.log
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Prediction outputs (can be regenerated)
+predictions*.csv
+example_predictions_output.csv
+
+# Old/redundant files (to be cleaned)
+default_prediction_model.pkl
+scaler.pkl
+label_encoders.pkl
+median_values.pkl
+feature_columns.pkl
+feature_importance.csv
+cleaned_data.csv
+model_pipeline.py
+predict.py
+test_predictions.py
+usage.py
+example_customers.csv
+example_minimal.csv
+predictions.csv
+
