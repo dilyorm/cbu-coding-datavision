@@ -1,2 +1,2 @@
-"""Source code package for default prediction pipeline"""
+"""Default Prediction ML Pipeline - Source Code Package."""
 

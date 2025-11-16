@@ -1,2 +1,2 @@
-"""Feature engineering and cleaning modules"""
+"""Feature engineering and selection modules."""
 

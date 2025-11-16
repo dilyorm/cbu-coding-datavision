@@ -1,2 +1,2 @@
-"""Data loading and merging modules"""
+"""Data processing, loading, cleaning, and preparation modules."""
 
