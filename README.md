@@ -4,8 +4,6 @@ A comprehensive machine learning pipeline for predicting loan defaults using ens
 
 ## Project Overview
 
-This project implements an advanced ensemble stacking approach inspired by the "American Express - Default Prediction" methodology. It combines:
-
 - **Multiple Feature Engineering Pipelines**: 3 different feature sets (v1, v2, v3)
 - **Diverse Base Models**: LightGBM, XGBoost, CatBoost, MLP, TabM
 - **Out-of-Fold (OOF) Predictions**: Used as meta-features for stacking
@@ -161,7 +159,7 @@ This script:
 - Saves results to `data/models/[version]_[model]/`
 
 **Outputs:**
-- 18 model directories (3 feature sets × 6 models)
+- 15 model directories (3 feature sets × 5 models)
 - Each directory contains: model, metrics, predictions, OOF predictions
 
 **Resume Capability:**
